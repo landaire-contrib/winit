@@ -191,6 +191,7 @@ features = [
     "NSProcessInfo",
     "NSThread",
     "NSSet",
+    "NSURL",
 ]
 
 [target.'cfg(target_os = "ios")'.dependencies.objc2-ui-kit]
@@ -203,6 +204,7 @@ features = [
     "UIGestureRecognizer",
     "UITextInput",
     "UITextInputTraits",
+    "UIOpenURLContext",
     "UIOrientation",
     "UIPanGestureRecognizer",
     "UIPinchGestureRecognizer",

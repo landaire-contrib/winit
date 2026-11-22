@@ -90,6 +90,9 @@
 //! Windows join the foremost connected window scene. A window created while no window scene is
 //! connected, such as before [`ApplicationHandler::resumed`], is shown when one connects.
 //!
+//! UIKit hands the URLs the system opens in the application to the scene delegate rather than to
+//! the application delegate. Receive them with [`set_open_url_handler`].
+//!
 //! [scene-life-cycle]: https://developer.apple.com/documentation/technotes/tn3187-migrating-to-the-uikit-scene-based-life-cycle
 //!
 //! ## Custom `UIApplicationDelegate`
@@ -119,6 +122,21 @@ impl<T: 'static> EventLoopExtIOS for EventLoop<T> {
     fn idiom(&self) -> Idiom {
         self.event_loop.idiom()
     }
+}
+
+/// Sets the function called with each URL the system opens in the application.
+///
+/// Only used with the [scene-based life cycle](self#scene-based-life-cycle), where UIKit hands
+/// opened URLs to Winit's scene delegate: the URLs a scene connects with, such as the one that
+/// launched the application, and those opened while it runs. Each is passed as its absolute
+/// string. URLs opened before a handler is set are passed to it when it is set. A new handler
+/// replaces the previous one.
+///
+/// ## Panics
+///
+/// Panics if not called on the main thread.
+pub fn set_open_url_handler(handler: impl FnMut(&str) + 'static) {
+    crate::platform_impl::set_open_url_handler(Box::new(handler));
 }
 
 /// Additional methods on [`EventLoopBuilder`] that are specific to iOS.

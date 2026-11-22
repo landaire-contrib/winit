@@ -43,4 +43,5 @@ changelog entry.
 ### Added
 
 - On iOS, add `EventLoopBuilderExtIOS::with_scene_life_cycle` to adopt the UIKit scene-based life cycle, which apps built with the iOS 27 SDK require.
+- On iOS, add `platform::ios::set_open_url_handler` to receive the URLs the system opens in an application that uses the scene-based life cycle.
 

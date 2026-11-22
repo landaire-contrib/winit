@@ -208,6 +208,10 @@ features = [
     "UIPinchGestureRecognizer",
     "UIResponder",
     "UIRotationGestureRecognizer",
+    "UIScene",
+    "UISceneDefinitions",
+    "UISceneOptions",
+    "UISceneSession",
     "UIScreen",
     "UIScreenMode",
     "UITapGestureRecognizer",
@@ -216,6 +220,7 @@ features = [
     "UIView",
     "UIViewController",
     "UIWindow",
+    "UIWindowScene",
 ]
 
 [target.'cfg(target_os = "windows")'.dependencies]

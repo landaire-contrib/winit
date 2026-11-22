@@ -13,15 +13,18 @@ use core_foundation::runloop::{
     kCFRunLoopCommonModes, CFRunLoopAddTimer, CFRunLoopGetMain, CFRunLoopRef, CFRunLoopTimerCreate,
     CFRunLoopTimerInvalidate, CFRunLoopTimerRef, CFRunLoopTimerSetNextFireDate,
 };
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, sel};
+use objc2::{msg_send, sel, ClassType};
 use objc2_foundation::{
-    CGRect, CGSize, MainThreadMarker, NSInteger, NSObjectProtocol, NSOperatingSystemVersion,
-    NSProcessInfo,
+    CGRect, CGSize, MainThreadMarker, NSArray, NSInteger, NSObjectProtocol,
+    NSOperatingSystemVersion, NSProcessInfo,
 };
-use objc2_ui_kit::{UIApplication, UICoordinateSpace, UIView, UIWindow};
+use objc2_ui_kit::{
+    UIApplication, UICoordinateSpace, UISceneActivationState, UIView, UIWindow, UIWindowScene,
+};
 
+use super::scene_delegate::is_application_role;
 use super::window::WinitUIWindow;
 use crate::dpi::PhysicalSize;
 use crate::event::{Event, InnerSizeWriter, StartCause, WindowEvent};
@@ -138,6 +141,19 @@ pub(crate) struct AppState {
     app_state: Option<AppStateImpl>,
     control_flow: ControlFlow,
     waker: EventLoopWaker,
+    /// Whether the application uses the scene-based life cycle.
+    scene_life_cycle: bool,
+    /// The number of foreground active scenes, which resume the application as a whole.
+    active_scenes: usize,
+    windows_awaiting_scene: Vec<WindowAwaitingScene>,
+}
+
+/// A window created while no window scene was connected, or whose scene disconnected.
+#[derive(Debug)]
+struct WindowAwaitingScene {
+    window: Weak<WinitUIWindow>,
+    /// Whether the window takes the bounds of the scene it joins, rather than keeping its size.
+    fills_scene: bool,
 }
 
 impl AppState {
@@ -163,6 +179,9 @@ impl AppState {
                     }),
                     control_flow: ControlFlow::default(),
                     waker,
+                    scene_life_cycle: false,
+                    active_scenes: 0,
+                    windows_awaiting_scene: Vec::new(),
                 });
             }
             init_guard(&mut guard);
@@ -415,10 +434,26 @@ impl AppState {
     pub(crate) fn control_flow(&self) -> ControlFlow {
         self.control_flow
     }
+
+    pub(crate) fn set_scene_life_cycle(&mut self, scene_life_cycle: bool) {
+        self.scene_life_cycle = scene_life_cycle;
+    }
 }
 
-pub(crate) fn set_key_window(mtm: MainThreadMarker, window: &Retained<WinitUIWindow>) {
+/// Shows a new window. With the scene-based life cycle, a window without a scene is instead held
+/// until a window scene connects.
+pub(crate) fn set_key_window(
+    mtm: MainThreadMarker,
+    window: &Retained<WinitUIWindow>,
+    fills_scene: bool,
+) {
     let mut this = AppState::get_mut(mtm);
+    if this.scene_life_cycle && !this.has_terminated() && unsafe { window.windowScene() }.is_none()
+    {
+        this.windows_awaiting_scene
+            .push(WindowAwaitingScene { window: Weak::from_retained(window), fills_scene });
+        return;
+    }
     match this.state_mut() {
         &mut AppStateImpl::NotLaunched { ref mut queued_windows, .. } => {
             return queued_windows.push(window.clone())
@@ -435,6 +470,84 @@ pub(crate) fn set_key_window(mtm: MainThreadMarker, window: &Retained<WinitUIWin
     }
     drop(this);
     window.makeKeyAndVisible();
+}
+
+/// The window scene that new windows join: the foremost connected scene of the application role.
+///
+/// `None` without the scene-based life cycle.
+pub(crate) fn window_scene(mtm: MainThreadMarker) -> Option<Retained<UIWindowScene>> {
+    let this = AppState::get_mut(mtm);
+    if !this.scene_life_cycle || !this.has_launched() {
+        return None;
+    }
+    drop(this);
+
+    let application = UIApplication::sharedApplication(mtm);
+    let scenes = unsafe { application.connectedScenes() };
+    scenes
+        .iter()
+        .filter(|scene| scene.is_kind_of::<UIWindowScene>())
+        .filter(|scene| is_application_role(&*unsafe { scene.session().role() }))
+        .min_by_key(|scene| match unsafe { scene.activationState() } {
+            UISceneActivationState::ForegroundActive => 0,
+            UISceneActivationState::ForegroundInactive => 1,
+            _ => 2,
+        })
+        // SAFETY: We just checked that the scene is a `UIWindowScene`.
+        .map(|scene| unsafe { Retained::cast(scene.retain()) })
+}
+
+/// Places the windows that are waiting for a scene in the newly connected `scene`.
+pub(crate) fn scene_will_connect(mtm: MainThreadMarker, scene: &UIWindowScene) {
+    let windows = mem::take(&mut AppState::get_mut(mtm).windows_awaiting_scene);
+    let bounds = unsafe { scene.coordinateSpace() }.bounds();
+    for WindowAwaitingScene { window, fills_scene } in windows {
+        let Some(window) = window.load() else {
+            continue;
+        };
+        unsafe { window.setWindowScene(Some(scene)) };
+        if fills_scene {
+            window.setFrame(bounds);
+        }
+        window.makeKeyAndVisible();
+    }
+}
+
+/// Holds the windows of a disconnecting `scene` until another scene connects.
+pub(crate) fn scene_did_disconnect(mtm: MainThreadMarker, scene: &UIWindowScene) {
+    let windows = unsafe { scene.windows() };
+    let bounds = unsafe { scene.coordinateSpace() }.bounds();
+    let mut this = AppState::get_mut(mtm);
+    for window in winit_windows(&windows) {
+        this.windows_awaiting_scene.push(WindowAwaitingScene {
+            window: Weak::new(window),
+            fills_scene: window.frame() == bounds,
+        });
+    }
+}
+
+/// Resumes the application when its first scene becomes active.
+pub(crate) fn scene_did_become_active(mtm: MainThreadMarker) {
+    let mut this = AppState::get_mut(mtm);
+    this.active_scenes += 1;
+    let first = this.active_scenes == 1;
+    drop(this);
+
+    if first {
+        handle_nonuser_event(mtm, EventWrapper::StaticEvent(Event::Resumed));
+    }
+}
+
+/// Suspends the application when its last active scene resigns.
+pub(crate) fn scene_will_resign_active(mtm: MainThreadMarker) {
+    let mut this = AppState::get_mut(mtm);
+    this.active_scenes = this.active_scenes.saturating_sub(1);
+    let last = this.active_scenes == 0;
+    drop(this);
+
+    if last {
+        handle_nonuser_event(mtm, EventWrapper::StaticEvent(Event::Suspended));
+    }
 }
 
 pub(crate) fn queue_gl_or_metal_redraw(mtm: MainThreadMarker, window: Retained<WinitUIWindow>) {
@@ -665,25 +778,36 @@ fn handle_user_events(mtm: MainThreadMarker) {
     }
 }
 
-pub(crate) fn send_occluded_event_for_all_windows(application: &UIApplication, occluded: bool) {
-    let mtm = MainThreadMarker::from(application);
+fn winit_windows(windows: &NSArray<UIWindow>) -> impl Iterator<Item = &WinitUIWindow> {
+    windows.iter().filter(|window| window.is_kind_of::<WinitUIWindow>()).map(|window| {
+        // SAFETY: We just checked that the window is a `winit` window
+        unsafe {
+            let ptr: *const UIWindow = window;
+            let ptr: *const WinitUIWindow = ptr.cast();
+            &*ptr
+        }
+    })
+}
 
-    let mut events = Vec::new();
+pub(crate) fn send_occluded_event_for_all_windows(application: &UIApplication, occluded: bool) {
     #[allow(deprecated)]
-    for window in application.windows().iter() {
-        if window.is_kind_of::<WinitUIWindow>() {
-            // SAFETY: We just checked that the window is a `winit` window
-            let window = unsafe {
-                let ptr: *const UIWindow = window;
-                let ptr: *const WinitUIWindow = ptr.cast();
-                &*ptr
-            };
-            events.push(EventWrapper::StaticEvent(Event::WindowEvent {
+    let windows = application.windows();
+    send_occluded_event_for_windows(MainThreadMarker::from(application), &windows, occluded);
+}
+
+pub(crate) fn send_occluded_event_for_windows(
+    mtm: MainThreadMarker,
+    windows: &NSArray<UIWindow>,
+    occluded: bool,
+) {
+    let events: Vec<EventWrapper> = winit_windows(windows)
+        .map(|window| {
+            EventWrapper::StaticEvent(Event::WindowEvent {
                 window_id: RootWindowId(window.id()),
                 event: WindowEvent::Occluded(occluded),
-            }));
-        }
-    }
+            })
+        })
+        .collect();
     handle_nonuser_events(mtm, events);
 }
 

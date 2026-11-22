@@ -62,24 +62,50 @@
 //!  - applicationWillResignActive is Suspended
 //!  - applicationWillTerminate is LoopExiting
 //!
+//! With the [scene-based life cycle](#scene-based-life-cycle), the scene delegate reports these
+//! events instead:
+//!
+//!  - sceneDidBecomeActive of the first active scene is Resumed
+//!  - sceneWillResignActive of the last active scene is Suspended
+//!  - sceneWillEnterForeground and sceneDidEnterBackground are Occluded for the scene's windows
+//!
 //! Keep in mind that after LoopExiting event is received every attempt to draw with
 //! opengl will result in segfault.
 //!
 //! Also note that app may not receive the LoopExiting event if suspended; it might be SIGKILL'ed.
+//!
+//! ## Scene-based life cycle
+//!
+//! UIKit requires applications built with the iOS 27 SDK or later to adopt the [scene-based life
+//! cycle][scene-life-cycle]. Enable it with [`EventLoopBuilderExtIOS::with_scene_life_cycle`].
+//!
+//! Winit then registers an application delegate, `WinitApplicationDelegate`, whose
+//! `application:configurationForConnectingSceneSession:options:` gives each scene of the
+//! `UIWindowSceneSessionRoleApplication` role Winit's scene delegate, `WinitSceneDelegate`. The
+//! application needs no `UIApplicationSceneManifest` in its `Info.plist`; one that is present may
+//! set `UIApplicationSupportsMultipleScenes`, and its scene configurations are not used. Scenes of
+//! other roles, such as a non-interactive external display, get no delegate, so UIKit keeps its
+//! default behavior for them.
+//!
+//! Windows join the foremost connected window scene. A window created while no window scene is
+//! connected, such as before [`ApplicationHandler::resumed`], is shown when one connects.
+//!
+//! [scene-life-cycle]: https://developer.apple.com/documentation/technotes/tn3187-migrating-to-the-uikit-scene-based-life-cycle
 //!
 //! ## Custom `UIApplicationDelegate`
 //!
 //! Winit usually handles everything related to the lifecycle events of the application. Sometimes,
 //! though, you might want to access some of the more niche stuff that [the application
 //! delegate][app-delegate] provides. This functionality is not exposed directly in Winit, since it
-//! would increase the API surface by quite a lot. Instead, Winit guarantees that it will not
-//! register an application delegate, so you can set up a custom one in a nib file instead.
+//! would increase the API surface by quite a lot. Instead, unless the scene-based life cycle is
+//! enabled, Winit guarantees that it will not register an application delegate, so you can set up
+//! a custom one in a nib file instead.
 //!
 //! [app-delegate]: https://developer.apple.com/documentation/uikit/uiapplicationdelegate?language=objc
 
 use std::os::raw::c_void;
 
-use crate::event_loop::EventLoop;
+use crate::event_loop::{EventLoop, EventLoopBuilder};
 use crate::monitor::{MonitorHandle, VideoModeHandle};
 use crate::window::{Window, WindowAttributes};
 
@@ -92,6 +118,45 @@ pub trait EventLoopExtIOS {
 impl<T: 'static> EventLoopExtIOS for EventLoop<T> {
     fn idiom(&self) -> Idiom {
         self.event_loop.idiom()
+    }
+}
+
+/// Additional methods on [`EventLoopBuilder`] that are specific to iOS.
+pub trait EventLoopBuilderExtIOS {
+    /// Sets whether the application uses the [scene-based life cycle](self#scene-based-life-cycle).
+    ///
+    /// The default is `false`, which keeps the application life cycle.
+    ///
+    /// ## Errors
+    ///
+    /// When enabled, [`EventLoopBuilder::build`] returns [`EventLoopError::NotSupported`] if UIKit
+    /// has no scenes, that is before iOS 13. An event loop can only be built once, so check the
+    /// system version before enabling it on such systems.
+    ///
+    /// [`EventLoopError::NotSupported`]: crate::error::EventLoopError::NotSupported
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// use winit::event_loop::EventLoop;
+    /// #[cfg(target_os = "ios")]
+    /// use winit::platform::ios::EventLoopBuilderExtIOS;
+    ///
+    /// let mut builder = EventLoop::builder();
+    /// #[cfg(target_os = "ios")]
+    /// builder.with_scene_life_cycle(true);
+    /// # if false { // We can't test this part
+    /// let event_loop = builder.build();
+    /// # }
+    /// ```
+    fn with_scene_life_cycle(&mut self, enabled: bool) -> &mut Self;
+}
+
+impl<T> EventLoopBuilderExtIOS for EventLoopBuilder<T> {
+    #[inline]
+    fn with_scene_life_cycle(&mut self, enabled: bool) -> &mut Self {
+        self.platform_specific.scene_life_cycle = enabled;
+        self
     }
 }
 

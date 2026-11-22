@@ -10,7 +10,7 @@ use objc2_foundation::{
 };
 use objc2_ui_kit::{
     UIApplication, UICoordinateSpace, UIResponder, UIScreen, UIScreenOverscanCompensation,
-    UIViewController, UIWindow,
+    UIViewController, UIWindow, UIWindowScene,
 };
 use tracing::{debug, warn};
 
@@ -79,8 +79,17 @@ impl WinitUIWindow {
         window_attributes: &WindowAttributes,
         frame: CGRect,
         view_controller: &UIViewController,
+        scene: Option<&UIWindowScene>,
     ) -> Retained<Self> {
-        let this: Retained<Self> = unsafe { msg_send_id![mtm.alloc(), initWithFrame: frame] };
+        let this: Retained<Self> = match scene {
+            Some(scene) => {
+                let this: Retained<Self> =
+                    unsafe { msg_send_id![mtm.alloc(), initWithWindowScene: scene] };
+                this.setFrame(frame);
+                this
+            },
+            None => unsafe { msg_send_id![mtm.alloc(), initWithFrame: frame] },
+        };
 
         this.setRootViewController(Some(view_controller));
 
@@ -89,11 +98,11 @@ impl WinitUIWindow {
                 let monitor = video_mode.monitor();
                 let screen = monitor.ui_screen(mtm);
                 screen.setCurrentMode(Some(video_mode.screen_mode(mtm)));
-                this.setScreen(screen);
+                set_screen(&this, scene, screen);
             },
             Some(Fullscreen::Borderless(Some(ref monitor))) => {
                 let screen = monitor.ui_screen(mtm);
-                this.setScreen(screen);
+                set_screen(&this, scene, screen);
             },
             _ => (),
         }
@@ -104,6 +113,14 @@ impl WinitUIWindow {
     pub(crate) fn id(&self) -> WindowId {
         (self as *const Self as usize as u64).into()
     }
+}
+
+fn set_screen(window: &UIWindow, scene: Option<&UIWindowScene>, screen: &UIScreen) {
+    // A window in a scene is already on the scene's screen.
+    if scene.is_some_and(|scene| *unsafe { scene.screen() } == *screen) {
+        return;
+    }
+    window.setScreen(screen);
 }
 
 pub struct Inner {
@@ -497,8 +514,13 @@ impl Window {
 
         // TODO: transparency, visible
 
+        let scene = app_state::window_scene(mtm);
+
         #[allow(deprecated)]
-        let main_screen = UIScreen::mainScreen(mtm);
+        let main_screen = match &scene {
+            Some(scene) => unsafe { scene.screen() },
+            None => UIScreen::mainScreen(mtm),
+        };
         let fullscreen = window_attributes.fullscreen.clone().map(Into::into);
         let screen = match fullscreen {
             Some(Fullscreen::Exclusive(ref video_mode)) => video_mode.monitor.ui_screen(mtm),
@@ -506,7 +528,10 @@ impl Window {
             Some(Fullscreen::Borderless(None)) | None => &main_screen,
         };
 
-        let screen_bounds = screen.bounds();
+        let screen_bounds = match &scene {
+            Some(scene) if *screen == main_screen => unsafe { scene.coordinateSpace() }.bounds(),
+            _ => screen.bounds(),
+        };
 
         let frame = match window_attributes.inner_size {
             Some(dim) => {
@@ -526,9 +551,10 @@ impl Window {
             view.isKindOfClass(class!(CAMetalLayer)) || view.isKindOfClass(class!(CAEAGLLayer));
 
         let view_controller = WinitViewController::new(mtm, &window_attributes, &view);
-        let window = WinitUIWindow::new(mtm, &window_attributes, frame, &view_controller);
+        let window =
+            WinitUIWindow::new(mtm, &window_attributes, frame, &view_controller, scene.as_deref());
 
-        app_state::set_key_window(mtm, &window);
+        app_state::set_key_window(mtm, &window, window_attributes.inner_size.is_none());
 
         // Like the Windows and macOS backends, we send a `ScaleFactorChanged` and `Resized`
         // event on window creation if the DPI factor != 1.0

@@ -39,3 +39,8 @@ The migration guide could reference other migration examples in the current
 changelog entry.
 
 ## Unreleased
+
+### Added
+
+- On iOS, add `EventLoopBuilderExtIOS::with_scene_life_cycle` to adopt the UIKit scene-based life cycle, which apps built with the iOS 27 SDK require.
+

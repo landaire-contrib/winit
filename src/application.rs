@@ -63,9 +63,11 @@ pub trait ApplicationHandler<T: 'static = ()> {
     ///
     /// On iOS, the `Resumed` event is emitted in response to an [`applicationDidBecomeActive`]
     /// callback which means the application is "active" (according to the
-    /// [iOS application lifecycle]).
+    /// [iOS application lifecycle]). With the scene-based life cycle of `platform::ios`, it is
+    /// emitted in response to a [`sceneDidBecomeActive`] callback instead.
     ///
     /// [`applicationDidBecomeActive`]: https://developer.apple.com/documentation/uikit/uiapplicationdelegate/1622956-applicationdidbecomeactive
+    /// [`sceneDidBecomeActive`]: https://developer.apple.com/documentation/uikit/uiscenedelegate/scenedidbecomeactive(_:)
     /// [iOS application lifecycle]: https://developer.apple.com/documentation/uikit/app_and_environment/managing_your_app_s_life_cycle
     ///
     /// ## Web
@@ -166,9 +168,11 @@ pub trait ApplicationHandler<T: 'static = ()> {
     /// On iOS, the `Suspended` event is currently emitted in response to an
     /// [`applicationWillResignActive`] callback which means that the application is
     /// about to transition from the active to inactive state (according to the
-    /// [iOS application lifecycle]).
+    /// [iOS application lifecycle]). With the scene-based life cycle of `platform::ios`, it is
+    /// emitted in response to a [`sceneWillResignActive`] callback instead.
     ///
     /// [`applicationWillResignActive`]: https://developer.apple.com/documentation/uikit/uiapplicationdelegate/1622950-applicationwillresignactive
+    /// [`sceneWillResignActive`]: https://developer.apple.com/documentation/uikit/uiscenedelegate/scenewillresignactive(_:)
     /// [iOS application lifecycle]: https://developer.apple.com/documentation/uikit/app_and_environment/managing_your_app_s_life_cycle
     ///
     /// ## Web

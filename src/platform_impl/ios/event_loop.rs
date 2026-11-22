@@ -12,8 +12,9 @@ use core_foundation::runloop::{
     CFRunLoopSourceInvalidate, CFRunLoopSourceRef, CFRunLoopSourceSignal, CFRunLoopWakeUp,
 };
 use objc2::rc::Retained;
+use objc2::runtime::AnyClass;
 use objc2::{msg_send_id, ClassType};
-use objc2_foundation::{MainThreadMarker, NSNotificationCenter, NSObject};
+use objc2_foundation::{MainThreadMarker, NSNotificationCenter, NSObject, NSString};
 use objc2_ui_kit::{
     UIApplication, UIApplicationDidBecomeActiveNotification,
     UIApplicationDidEnterBackgroundNotification, UIApplicationDidFinishLaunchingNotification,
@@ -22,7 +23,7 @@ use objc2_ui_kit::{
     UIApplicationWillTerminateNotification, UIDevice, UIScreen, UIUserInterfaceIdiom,
 };
 
-use crate::error::EventLoopError;
+use crate::error::{EventLoopError, NotSupportedError};
 use crate::event::Event;
 use crate::event_loop::{
     ActiveEventLoop as RootActiveEventLoop, ControlFlow, DeviceEvents, EventLoopClosed,
@@ -31,6 +32,7 @@ use crate::platform::ios::Idiom;
 use crate::platform_impl::ios::app_state::{EventLoopHandler, HandlePendingUserEvents};
 use crate::window::{CustomCursor, CustomCursorSource, Theme};
 
+use super::app_delegate::WinitApplicationDelegate;
 use super::app_state::{send_occluded_event_for_all_windows, AppState, EventWrapper};
 use super::notification_center::create_observer;
 use super::{app_state, monitor, MonitorHandle};
@@ -135,6 +137,7 @@ fn map_user_event<T: 'static>(
 
 pub struct EventLoop<T: 'static> {
     mtm: MainThreadMarker,
+    scene_life_cycle: bool,
     sender: Sender<T>,
     receiver: Receiver<T>,
     window_target: RootActiveEventLoop,
@@ -144,23 +147,36 @@ pub struct EventLoop<T: 'static> {
     //
     // Though we do still need to keep the observers around to prevent them from being deallocated.
     _did_finish_launching_observer: Retained<NSObject>,
-    _did_become_active_observer: Retained<NSObject>,
-    _will_resign_active_observer: Retained<NSObject>,
-    _will_enter_foreground_observer: Retained<NSObject>,
-    _did_enter_background_observer: Retained<NSObject>,
+    // With the scene-based life cycle, the scene delegate reports these transitions instead.
+    _application_state_observers: Option<ApplicationStateObservers>,
     _will_terminate_observer: Retained<NSObject>,
     _did_receive_memory_warning_observer: Retained<NSObject>,
 }
 
+struct ApplicationStateObservers {
+    _did_become_active: Retained<NSObject>,
+    _will_resign_active: Retained<NSObject>,
+    _will_enter_foreground: Retained<NSObject>,
+    _did_enter_background: Retained<NSObject>,
+}
+
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct PlatformSpecificEventLoopAttributes {}
+pub(crate) struct PlatformSpecificEventLoopAttributes {
+    pub(crate) scene_life_cycle: bool,
+}
 
 impl<T: 'static> EventLoop<T> {
     pub(crate) fn new(
-        _: &PlatformSpecificEventLoopAttributes,
+        attributes: &PlatformSpecificEventLoopAttributes,
     ) -> Result<EventLoop<T>, EventLoopError> {
         let mtm = MainThreadMarker::new()
             .expect("On iOS, `EventLoop` must be created on the main thread");
+
+        // Scenes exist from iOS 13 on. The class is looked up rather than linked, so that older
+        // deployment targets still launch.
+        if attributes.scene_life_cycle && AnyClass::get("UIWindowScene").is_none() {
+            return Err(EventLoopError::NotSupported(NotSupportedError::new()));
+        }
 
         static mut SINGLETON_INIT: bool = false;
         unsafe {
@@ -172,6 +188,9 @@ impl<T: 'static> EventLoop<T> {
         }
 
         let (sender, receiver) = mpsc::channel();
+
+        let scene_life_cycle = attributes.scene_life_cycle;
+        AppState::get_mut(mtm).set_scene_life_cycle(scene_life_cycle);
 
         // this line sets up the main run loop before `UIApplicationMain`
         setup_control_flow_observers();
@@ -186,50 +205,61 @@ impl<T: 'static> EventLoop<T> {
                 app_state::did_finish_launching(mtm);
             },
         );
-        let _did_become_active_observer = create_observer(
-            &center,
-            // `applicationDidBecomeActive:`
-            unsafe { UIApplicationDidBecomeActiveNotification },
-            move |_| {
-                app_state::handle_nonuser_event(mtm, EventWrapper::StaticEvent(Event::Resumed));
-            },
-        );
-        let _will_resign_active_observer = create_observer(
-            &center,
-            // `applicationWillResignActive:`
-            unsafe { UIApplicationWillResignActiveNotification },
-            move |_| {
-                app_state::handle_nonuser_event(mtm, EventWrapper::StaticEvent(Event::Suspended));
-            },
-        );
-        let _will_enter_foreground_observer = create_observer(
-            &center,
-            // `applicationWillEnterForeground:`
-            unsafe { UIApplicationWillEnterForegroundNotification },
-            move |notification| {
-                let app = unsafe { notification.object() }.expect(
-                    "UIApplicationWillEnterForegroundNotification to have application object",
-                );
-                // SAFETY: The `object` in `UIApplicationWillEnterForegroundNotification` is
-                // documented to be `UIApplication`.
-                let app: Retained<UIApplication> = unsafe { Retained::cast(app) };
-                send_occluded_event_for_all_windows(&app, false);
-            },
-        );
-        let _did_enter_background_observer = create_observer(
-            &center,
-            // `applicationDidEnterBackground:`
-            unsafe { UIApplicationDidEnterBackgroundNotification },
-            move |notification| {
-                let app = unsafe { notification.object() }.expect(
-                    "UIApplicationDidEnterBackgroundNotification to have application object",
-                );
-                // SAFETY: The `object` in `UIApplicationDidEnterBackgroundNotification` is
-                // documented to be `UIApplication`.
-                let app: Retained<UIApplication> = unsafe { Retained::cast(app) };
-                send_occluded_event_for_all_windows(&app, true);
-            },
-        );
+        let _application_state_observers = (!scene_life_cycle).then(|| {
+            let _did_become_active = create_observer(
+                &center,
+                // `applicationDidBecomeActive:`
+                unsafe { UIApplicationDidBecomeActiveNotification },
+                move |_| {
+                    app_state::handle_nonuser_event(mtm, EventWrapper::StaticEvent(Event::Resumed));
+                },
+            );
+            let _will_resign_active = create_observer(
+                &center,
+                // `applicationWillResignActive:`
+                unsafe { UIApplicationWillResignActiveNotification },
+                move |_| {
+                    app_state::handle_nonuser_event(
+                        mtm,
+                        EventWrapper::StaticEvent(Event::Suspended),
+                    );
+                },
+            );
+            let _will_enter_foreground = create_observer(
+                &center,
+                // `applicationWillEnterForeground:`
+                unsafe { UIApplicationWillEnterForegroundNotification },
+                move |notification| {
+                    let app = unsafe { notification.object() }.expect(
+                        "UIApplicationWillEnterForegroundNotification to have application object",
+                    );
+                    // SAFETY: The `object` in `UIApplicationWillEnterForegroundNotification` is
+                    // documented to be `UIApplication`.
+                    let app: Retained<UIApplication> = unsafe { Retained::cast(app) };
+                    send_occluded_event_for_all_windows(&app, false);
+                },
+            );
+            let _did_enter_background = create_observer(
+                &center,
+                // `applicationDidEnterBackground:`
+                unsafe { UIApplicationDidEnterBackgroundNotification },
+                move |notification| {
+                    let app = unsafe { notification.object() }.expect(
+                        "UIApplicationDidEnterBackgroundNotification to have application object",
+                    );
+                    // SAFETY: The `object` in `UIApplicationDidEnterBackgroundNotification` is
+                    // documented to be `UIApplication`.
+                    let app: Retained<UIApplication> = unsafe { Retained::cast(app) };
+                    send_occluded_event_for_all_windows(&app, true);
+                },
+            );
+            ApplicationStateObservers {
+                _did_become_active,
+                _will_resign_active,
+                _will_enter_foreground,
+                _did_enter_background,
+            }
+        });
         let _will_terminate_observer = create_observer(
             &center,
             // `applicationWillTerminate:`
@@ -257,14 +287,12 @@ impl<T: 'static> EventLoop<T> {
 
         Ok(EventLoop {
             mtm,
+            scene_life_cycle,
             sender,
             receiver,
             window_target: RootActiveEventLoop { p: ActiveEventLoop { mtm }, _marker: PhantomData },
             _did_finish_launching_observer,
-            _did_become_active_observer,
-            _will_resign_active_observer,
-            _will_enter_foreground_observer,
-            _did_enter_background_observer,
+            _application_state_observers,
             _will_terminate_observer,
             _did_receive_memory_warning_observer,
         })
@@ -302,14 +330,20 @@ impl<T: 'static> EventLoop<T> {
             fn _NSGetArgv() -> *mut *mut *mut c_char;
         }
 
+        // We intentionally override neither the application nor the delegate, to allow the user to
+        // do so themselves! The scene-based life cycle needs Winit's delegate, which configures
+        // the scenes.
+        let delegate_class_name = self.scene_life_cycle.then(|| {
+            let _ = WinitApplicationDelegate::class();
+            NSString::from_str(WinitApplicationDelegate::NAME)
+        });
+
         unsafe {
             UIApplicationMain(
                 *_NSGetArgc(),
                 NonNull::new(*_NSGetArgv()).unwrap(),
-                // We intentionally override neither the application nor the delegate, to allow the
-                // user to do so themselves!
                 None,
-                None,
+                delegate_class_name.as_deref(),
             )
         };
         unreachable!()

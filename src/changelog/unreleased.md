@@ -47,3 +47,7 @@ changelog entry.
 - On iOS, implement `Window::theme`, `ActiveEventLoop::system_theme` and `WindowEvent::ThemeChanged`.
 - On iOS, report the hover of a trackpad or mouse pointer as `WindowEvent::CursorEntered`, `WindowEvent::CursorMoved` and `WindowEvent::CursorLeft`.
 
+### Fixed
+
+- On iOS, no longer log a warning for `Event::AboutToWait` on each iteration of the event loop.
+

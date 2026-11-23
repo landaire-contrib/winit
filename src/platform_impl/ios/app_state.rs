@@ -95,6 +95,11 @@ impl Event<HandlePendingUserEvents> {
     fn is_redraw(&self) -> bool {
         matches!(self, Event::WindowEvent { event: WindowEvent::RedrawRequested, .. })
     }
+
+    /// `AboutToWait` follows the redraws of each iteration of the event loop.
+    fn is_expected_after_main_events(&self) -> bool {
+        self.is_redraw() || matches!(self, Event::AboutToWait)
+    }
 }
 
 // this is the state machine for the app lifecycle
@@ -663,7 +668,7 @@ pub(crate) fn handle_nonuser_events<I: IntoIterator<Item = EventWrapper>>(
             EventWrapper::StaticEvent(event) => {
                 if !processing_redraws && event.is_redraw() {
                     tracing::info!("processing `RedrawRequested` during the main event loop");
-                } else if processing_redraws && !event.is_redraw() {
+                } else if processing_redraws && !event.is_expected_after_main_events() {
                     tracing::warn!(
                         "processing non `RedrawRequested` event after the main event loop: {:#?}",
                         event
@@ -708,7 +713,7 @@ pub(crate) fn handle_nonuser_events<I: IntoIterator<Item = EventWrapper>>(
                 EventWrapper::StaticEvent(event) => {
                     if !processing_redraws && event.is_redraw() {
                         tracing::info!("processing `RedrawRequested` during the main event loop");
-                    } else if processing_redraws && !event.is_redraw() {
+                    } else if processing_redraws && !event.is_expected_after_main_events() {
                         tracing::warn!(
                             "processing non-`RedrawRequested` event after the main event loop: \
                              {:#?}",

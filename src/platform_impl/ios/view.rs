@@ -2,7 +2,7 @@
 use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
-use objc2::runtime::{NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyClass, NSObjectProtocol, ProtocolObject};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_foundation::{CGFloat, CGPoint, CGRect, MainThreadMarker, NSObject, NSSet, NSString};
 use objc2_ui_kit::{
@@ -332,13 +332,13 @@ declare_class!(
                 self.contentScaleFactor() as f64,
             );
             let moved = WindowEvent::CursorMoved { device_id: DEVICE_ID, position };
-            let events = match recognizer.state() {
+            let (entered, event) = match recognizer.state() {
                 UIGestureRecognizerState::Began => {
-                    vec![WindowEvent::CursorEntered { device_id: DEVICE_ID }, moved]
+                    (Some(WindowEvent::CursorEntered { device_id: DEVICE_ID }), moved)
                 }
-                UIGestureRecognizerState::Changed => vec![moved],
+                UIGestureRecognizerState::Changed => (None, moved),
                 UIGestureRecognizerState::Ended | UIGestureRecognizerState::Cancelled => {
-                    vec![WindowEvent::CursorLeft { device_id: DEVICE_ID }]
+                    (None, WindowEvent::CursorLeft { device_id: DEVICE_ID })
                 }
                 _ => return,
             };
@@ -346,7 +346,7 @@ declare_class!(
             let mtm = MainThreadMarker::new().unwrap();
             app_state::handle_nonuser_events(
                 mtm,
-                events.into_iter().map(|event| {
+                entered.into_iter().chain(Some(event)).map(|event| {
                     EventWrapper::StaticEvent(Event::WindowEvent { window_id, event })
                 }),
             );
@@ -434,17 +434,20 @@ impl WinitView {
         this.setMultipleTouchEnabled(true);
 
         // A trackpad or a mouse moves the pointer over the view without a touch. The recognizer
-        // reports that movement, and it takes no touches from the view.
-        let hover = unsafe {
-            UIHoverGestureRecognizer::initWithTarget_action(
-                mtm.alloc(),
-                Some(&this),
-                Some(sel!(hoverGesture:)),
-            )
-        };
-        hover.setDelegate(Some(ProtocolObject::from_ref(&*this)));
-        unsafe { hover.setCancelsTouchesInView(false) };
-        this.addGestureRecognizer(&hover);
+        // reports that movement, and it takes no touches from the view. The class exists from
+        // iOS 13 on, and is looked up so that older deployment targets still launch.
+        if AnyClass::get("UIHoverGestureRecognizer").is_some() {
+            let hover = unsafe {
+                UIHoverGestureRecognizer::initWithTarget_action(
+                    mtm.alloc(),
+                    Some(&this),
+                    Some(sel!(hoverGesture:)),
+                )
+            };
+            hover.setDelegate(Some(ProtocolObject::from_ref(&*this)));
+            unsafe { hover.setCancelsTouchesInView(false) };
+            this.addGestureRecognizer(&hover);
+        }
 
         if let Some(scale_factor) = window_attributes.platform_specific.scale_factor {
             this.setContentScaleFactor(scale_factor as _);

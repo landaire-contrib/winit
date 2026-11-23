@@ -443,7 +443,7 @@ impl ActiveEventLoop {
     ///
     /// ## Platform-specific
     ///
-    /// - **iOS / Android / Wayland / x11 / Orbital:** Unsupported.
+    /// - **Android / Wayland / x11 / Orbital:** Unsupported.
     pub fn system_theme(&self) -> Option<Theme> {
         self.p.system_theme()
     }

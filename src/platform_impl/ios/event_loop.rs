@@ -20,7 +20,8 @@ use objc2_ui_kit::{
     UIApplicationDidEnterBackgroundNotification, UIApplicationDidFinishLaunchingNotification,
     UIApplicationDidReceiveMemoryWarningNotification, UIApplicationMain,
     UIApplicationWillEnterForegroundNotification, UIApplicationWillResignActiveNotification,
-    UIApplicationWillTerminateNotification, UIDevice, UIScreen, UIUserInterfaceIdiom,
+    UIApplicationWillTerminateNotification, UIDevice, UIScreen, UITraitEnvironment,
+    UIUserInterfaceIdiom,
 };
 
 use crate::error::{EventLoopError, NotSupportedError};
@@ -35,7 +36,7 @@ use crate::window::{CustomCursor, CustomCursorSource, Theme};
 use super::app_delegate::WinitApplicationDelegate;
 use super::app_state::{send_occluded_event_for_all_windows, AppState, EventWrapper};
 use super::notification_center::create_observer;
-use super::{app_state, monitor, MonitorHandle};
+use super::{app_state, monitor, view, MonitorHandle};
 
 #[derive(Debug)]
 pub struct ActiveEventLoop {
@@ -68,7 +69,10 @@ impl ActiveEventLoop {
 
     #[inline]
     pub fn system_theme(&self) -> Option<Theme> {
-        None
+        // The main screen's traits follow the system appearance and ignore any window's override.
+        #[allow(deprecated)]
+        let screen = UIScreen::mainScreen(self.mtm);
+        view::theme(unsafe { screen.traitCollection().userInterfaceStyle() })
     }
 
     #[cfg(feature = "rwh_06")]

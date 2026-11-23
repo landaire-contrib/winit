@@ -1377,7 +1377,7 @@ impl Window {
     ///
     /// ## Platform-specific
     ///
-    /// - **iOS / Android / x11 / Orbital:** Unsupported.
+    /// - **Android / x11 / Orbital:** Unsupported.
     /// - **Wayland:** Only returns theme overrides.
     #[inline]
     pub fn theme(&self) -> Option<Theme> {

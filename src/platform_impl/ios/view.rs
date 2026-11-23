@@ -9,7 +9,8 @@ use objc2_ui_kit::{
     UICoordinateSpace, UIEvent, UIForceTouchCapability, UIGestureRecognizer,
     UIGestureRecognizerDelegate, UIGestureRecognizerState, UIKeyInput, UIPanGestureRecognizer,
     UIPinchGestureRecognizer, UIResponder, UIRotationGestureRecognizer, UITapGestureRecognizer,
-    UITextInputTraits, UITouch, UITouchPhase, UITouchType, UITraitEnvironment, UIView,
+    UITextInputTraits, UITouch, UITouchPhase, UITouchType, UITraitCollection, UITraitEnvironment,
+    UIUserInterfaceStyle, UIView,
 };
 
 use super::app_state::{self, EventWrapper};
@@ -19,7 +20,7 @@ use crate::event::{ElementState, Event, Force, KeyEvent, Touch, TouchPhase, Wind
 use crate::keyboard::{Key, KeyCode, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 use crate::platform_impl::platform::DEVICE_ID;
 use crate::platform_impl::KeyEventExtra;
-use crate::window::{WindowAttributes, WindowId as RootWindowId};
+use crate::window::{Theme, WindowAttributes, WindowId as RootWindowId};
 
 pub struct WinitViewState {
     pinch_gesture_recognizer: RefCell<Option<Retained<UIPinchGestureRecognizer>>>,
@@ -321,6 +322,31 @@ declare_class!(
         fn can_become_first_responder(&self) -> bool {
             true
         }
+
+        #[method(traitCollectionDidChange:)]
+        fn trait_collection_did_change(&self, previous: Option<&UITraitCollection>) {
+            let mtm = MainThreadMarker::new().unwrap();
+            let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
+
+            // The first trait collection of a view that enters a window has no style to change
+            // from, so only a change between two known themes is reported.
+            let previous = previous.and_then(|previous| theme(unsafe { previous.userInterfaceStyle() }));
+            let current = theme(unsafe { self.traitCollection().userInterfaceStyle() });
+            let (Some(previous), Some(current), Some(window)) = (previous, current, self.window()) else {
+                return;
+            };
+            if previous == current {
+                return;
+            }
+
+            app_state::handle_nonuser_event(
+                mtm,
+                EventWrapper::StaticEvent(Event::WindowEvent {
+                    window_id: RootWindowId(window.id()),
+                    event: WindowEvent::ThemeChanged(current),
+                }),
+            );
+        }
     }
 
     unsafe impl NSObjectProtocol for WinitView {}
@@ -383,6 +409,10 @@ impl WinitView {
     fn window(&self) -> Option<Retained<WinitUIWindow>> {
         // SAFETY: `WinitView`s are always installed in a `WinitUIWindow`
         (**self).window().map(|window| unsafe { Retained::cast(window) })
+    }
+
+    pub(crate) fn theme(&self) -> Option<Theme> {
+        theme(unsafe { self.traitCollection().userInterfaceStyle() })
     }
 
     pub(crate) fn recognize_pinch_gesture(&self, should_recognize: bool) {
@@ -603,5 +633,15 @@ impl WinitView {
                 })
             }),
         );
+    }
+}
+
+/// The theme that a trait collection's interface style selects. `None` when the style is
+/// unspecified.
+pub(crate) fn theme(style: UIUserInterfaceStyle) -> Option<Theme> {
+    match style {
+        UIUserInterfaceStyle::Light => Some(Theme::Light),
+        UIUserInterfaceStyle::Dark => Some(Theme::Dark),
+        _ => None,
     }
 }

@@ -393,7 +393,7 @@ pub enum WindowEvent {
     ///
     /// ## Platform-specific
     ///
-    /// - **iOS / Android / X11 / Wayland / Orbital:** Unsupported.
+    /// - **Android / X11 / Wayland / Orbital:** Unsupported.
     ThemeChanged(Theme),
 
     /// The window has been occluded (completely hidden from view).

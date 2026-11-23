@@ -7,10 +7,10 @@ use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, De
 use objc2_foundation::{CGFloat, CGPoint, CGRect, MainThreadMarker, NSObject, NSSet, NSString};
 use objc2_ui_kit::{
     UICoordinateSpace, UIEvent, UIForceTouchCapability, UIGestureRecognizer,
-    UIGestureRecognizerDelegate, UIGestureRecognizerState, UIKeyInput, UIPanGestureRecognizer,
-    UIPinchGestureRecognizer, UIResponder, UIRotationGestureRecognizer, UITapGestureRecognizer,
-    UITextInputTraits, UITouch, UITouchPhase, UITouchType, UITraitCollection, UITraitEnvironment,
-    UIUserInterfaceStyle, UIView,
+    UIGestureRecognizerDelegate, UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyInput,
+    UIPanGestureRecognizer, UIPinchGestureRecognizer, UIResponder, UIRotationGestureRecognizer,
+    UITapGestureRecognizer, UITextInputTraits, UITouch, UITouchPhase, UITouchType,
+    UITraitCollection, UITraitEnvironment, UIUserInterfaceStyle, UIView,
 };
 
 use super::app_state::{self, EventWrapper};
@@ -318,6 +318,40 @@ declare_class!(
             app_state::handle_nonuser_event(mtm, gesture_event);
         }
 
+        #[method(hoverGesture:)]
+        fn hover_gesture(&self, recognizer: &UIHoverGestureRecognizer) {
+            let Some(window) = self.window() else {
+                return;
+            };
+            let window_id = RootWindowId(window.id());
+
+            // The same coordinate space as a touch, so that a click lands where the pointer was.
+            let location = unsafe { recognizer.locationInView(None) };
+            let position = PhysicalPosition::from_logical::<(f64, f64), f64>(
+                (location.x as _, location.y as _),
+                self.contentScaleFactor() as f64,
+            );
+            let moved = WindowEvent::CursorMoved { device_id: DEVICE_ID, position };
+            let events = match recognizer.state() {
+                UIGestureRecognizerState::Began => {
+                    vec![WindowEvent::CursorEntered { device_id: DEVICE_ID }, moved]
+                }
+                UIGestureRecognizerState::Changed => vec![moved],
+                UIGestureRecognizerState::Ended | UIGestureRecognizerState::Cancelled => {
+                    vec![WindowEvent::CursorLeft { device_id: DEVICE_ID }]
+                }
+                _ => return,
+            };
+
+            let mtm = MainThreadMarker::new().unwrap();
+            app_state::handle_nonuser_events(
+                mtm,
+                events.into_iter().map(|event| {
+                    EventWrapper::StaticEvent(Event::WindowEvent { window_id, event })
+                }),
+            );
+        }
+
         #[method(canBecomeFirstResponder)]
         fn can_become_first_responder(&self) -> bool {
             true
@@ -398,6 +432,19 @@ impl WinitView {
         let this: Retained<Self> = unsafe { msg_send_id![super(this), initWithFrame: frame] };
 
         this.setMultipleTouchEnabled(true);
+
+        // A trackpad or a mouse moves the pointer over the view without a touch. The recognizer
+        // reports that movement, and it takes no touches from the view.
+        let hover = unsafe {
+            UIHoverGestureRecognizer::initWithTarget_action(
+                mtm.alloc(),
+                Some(&this),
+                Some(sel!(hoverGesture:)),
+            )
+        };
+        hover.setDelegate(Some(ProtocolObject::from_ref(&*this)));
+        unsafe { hover.setCancelsTouchesInView(false) };
+        this.addGestureRecognizer(&hover);
 
         if let Some(scale_factor) = window_attributes.platform_specific.scale_factor {
             this.setContentScaleFactor(scale_factor as _);

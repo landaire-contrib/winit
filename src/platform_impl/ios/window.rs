@@ -389,15 +389,7 @@ impl Inner {
     /// [objc2_ui_kit::UIKeyInput], the keyboard will be shown.
     /// <https://developer.apple.com/documentation/uikit/uiresponder/1621113-becomefirstresponder>
     pub fn set_ime_allowed(&self, allowed: bool) {
-        if allowed {
-            unsafe {
-                self.view.becomeFirstResponder();
-            }
-        } else {
-            unsafe {
-                self.view.resignFirstResponder();
-            }
-        }
+        self.view.set_ime_allowed(allowed);
     }
 
     pub fn set_ime_purpose(&self, _purpose: ImePurpose) {

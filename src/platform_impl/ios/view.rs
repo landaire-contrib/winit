@@ -32,6 +32,9 @@ pub struct WinitViewState {
     rotation_last_delta: Cell<CGFloat>,
     pinch_last_delta: Cell<CGFloat>,
     pan_last_delta: Cell<CGPoint>,
+
+    // Whether the view accepts text input, see `Window::set_ime_allowed`.
+    ime_allowed: Cell<bool>,
 }
 
 declare_class!(
@@ -352,9 +355,12 @@ declare_class!(
             );
         }
 
+        // The view adopts `UIKeyInput`, so while it is the first responder the keyboard is shown.
+        // When another responder resigns, UIKit offers first responder to its ancestors, and this
+        // view must decline unless text input is allowed.
         #[method(canBecomeFirstResponder)]
         fn can_become_first_responder(&self) -> bool {
-            true
+            self.ivars().ime_allowed.get()
         }
 
         #[method(traitCollectionDidChange:)]
@@ -428,6 +434,8 @@ impl WinitView {
             rotation_last_delta: Cell::new(0.0),
             pinch_last_delta: Cell::new(0.0),
             pan_last_delta: Cell::new(CGPoint { x: 0.0, y: 0.0 }),
+
+            ime_allowed: Cell::new(false),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), initWithFrame: frame] };
 
@@ -618,6 +626,15 @@ impl WinitView {
         }
         let mtm = MainThreadMarker::new().unwrap();
         app_state::handle_nonuser_events(mtm, touch_events);
+    }
+
+    pub(crate) fn set_ime_allowed(&self, allowed: bool) {
+        self.ivars().ime_allowed.set(allowed);
+        if allowed {
+            unsafe { self.becomeFirstResponder() };
+        } else {
+            unsafe { self.resignFirstResponder() };
+        }
     }
 
     fn handle_insert_text(&self, text: &NSString) {

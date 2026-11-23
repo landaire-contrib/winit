@@ -50,4 +50,5 @@ changelog entry.
 ### Fixed
 
 - On iOS, no longer log a warning for `Event::AboutToWait` on each iteration of the event loop.
+- On iOS, the window's view only becomes the first responder while IME is allowed, so the keyboard no longer stays up when a subview resigns first responder.
 
